@@ -113,7 +113,9 @@ def configure(work_dir: Path, script: str, runner: str = None, output_name: str 
     build_dir = work_dir / "build"
     print(f"destroy cmake in {build_dir} before configure...")
     shutil.rmtree(build_dir / "CMakeFiles", ignore_errors=True)
-    (build_dir / "CMakeCache.txt").unlink(missing_ok=True)
+    cmakecache_path = build_dir / "CMakeCache.txt"
+    if cmakecache_path.is_file():
+        cmakecache_path.unlink()
 
     with RunnableScript(script, prefix=str(work_dir.resolve() / "configure_")) as f:
         try:
