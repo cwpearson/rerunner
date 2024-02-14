@@ -1,0 +1,21 @@
+remote: https://github.com/trilinos/Trilinos.git
+start_date: 2023-12-31
+end_date: 2023-01-01
+configure:
+  script: >
+   cmake -S . -B build \
+     -DCMAKE_BUILD_TYPE=Release \
+     -DTrilinos_TEST_CATEGORIES=PERFORMANCE \
+     -DTrilinos_ENABLE_TESTS=ON \
+     -DTrilinos_ENABLE_EXAMPLES=ON \
+     -DTrilinos_ENABLE_Tpetra=ON \
+     -DTpetra_INST_SERIAL=ON \
+     -DTpetra_INST_INT_INT=ON \
+     -DTrilinos_ENABLE_EXPLICIT_INSTANTIATION=ON \
+     -DKokkos_ENABLE_SERIAL=ON \
+     -DTPL_ENABLE_MPI=ON \
+     -DMPI_EXEC_MAX_NUMPROCS=4 \
+build:
+  script: make -j6
+test:
+  script: ctest -V
