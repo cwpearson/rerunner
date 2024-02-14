@@ -21,7 +21,7 @@ class RunException(Exception):
         self.code = code
 
 
-def run(cmd, cwd=None, output_name: str = None, output_append=False):
+def run(cmd, cwd=None, output_name: Path = None, output_append=False):
     """Run a shell command and return its output."""
     print(f"run {cmd} in {cwd}")
     process = subprocess.Popen(
@@ -37,9 +37,9 @@ def run(cmd, cwd=None, output_name: str = None, output_append=False):
         else:
             mode = "w"
         Path(output_name).parent.mkdir(exist_ok=True)
-        with open(output_name + ".out", mode) as f:
+        with open(str(output_name) + ".out", mode) as f:
             f.write(stdout)
-        with open(output_name + ".err", mode) as f:
+        with open(str(output_name) + ".err", mode) as f:
             f.write(stderr)
 
     code = process.returncode
@@ -75,7 +75,12 @@ def get(work_dir: Path, remote: str):
 
 
 def update(work_dir: Path, sha: str, output_name: str = None):
-    run(f"git checkout {sha}", cwd=work_dir, output_name=output_name)
+    try:
+        run(f"git reset --hard {sha}", cwd=work_dir, output_name=output_name)
+    except RunException as e:
+        print(e.stdout)
+        print(e.stderr)
+        raise e
 
 
 class RunnableScript:
@@ -87,17 +92,16 @@ class RunnableScript:
         self.prefix = prefix
 
     def __enter__(self):
-        f = NamedTemporaryFile("w", prefix=self.prefix, suffix=".sh", delete=False)
+        f = open(str(self.prefix) + ".sh", 'w')
         self.name = f.name
         f.write("#! /bin/bash\n")
-        f.write("set -eou pipefail\n")
+        f.write("set -eo pipefail\n")
         f.write(self.script)
         f.close()
         os.chmod(self.name, RunnableScript.RWX)
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        os.remove(self.name)
         if exc_type is not None:
             raise exc_val
         return True
@@ -111,13 +115,13 @@ def configure(work_dir: Path, script: str, runner: str = None, output_name: str 
         runner = runner + " "
 
     build_dir = work_dir / "build"
-    print(f"destroy cmake in {build_dir} before configure...")
-    shutil.rmtree(build_dir / "CMakeFiles", ignore_errors=True)
-    cmakecache_path = build_dir / "CMakeCache.txt"
+    print(f"destroy cmake stuff in {build_dir} before configure...")
+    shutil.rmtree(work_dir / "CMakeFiles", ignore_errors=True)
+    cmakecache_path = work_dir / "CMakeCache.txt"
     if cmakecache_path.is_file():
         cmakecache_path.unlink()
 
-    with RunnableScript(script, prefix=str(work_dir.resolve() / "configure_")) as f:
+    with RunnableScript(script, prefix=output_name) as f:
         try:
             stdout, stderr, code = run(
                 runner + f.name, cwd=work_dir, output_name=output_name
@@ -136,7 +140,7 @@ def build(work_dir: Path, script: str, runner: str = None, output_name: str = No
     else:
         runner = runner + " "
 
-    with RunnableScript(script, prefix=str(work_dir.resolve() / "build_")) as f:
+    with RunnableScript(script, prefix=output_name) as f:
         try:
             stdout, stderr, code = run(
                 runner + f.name, cwd=work_dir / "build", output_name=output_name
@@ -155,7 +159,7 @@ def test(work_dir: Path, script: str, runner: str = None, output_name: str = Non
     else:
         runner = runner + " "
 
-    with RunnableScript(script, prefix=str(work_dir.resolve() / "test_")) as f:
+    with RunnableScript(script, prefix=output_name) as f:
         try:
             stdout, stderr, code = run(
                 runner + f.name,
@@ -255,6 +259,10 @@ def main(spec: Path, work_dir: Path, out_dir: Path, start_date: str, end_date: s
     if work_dir is None:
         raise RuntimeError("no work dir")
 
+    if out_dir is None:
+        raise RuntimeError("no output dir")
+    out_dir = out_dir.resolve()
+
     # replace {{work_dir}} in the configure script with work_dir
     configure_script = configure_script.replace("{{work_dir}}", str(work_dir.resolve()))
 
@@ -270,26 +278,26 @@ def main(spec: Path, work_dir: Path, out_dir: Path, start_date: str, end_date: s
                 update(
                     work_dir,
                     commit_hash,
-                    output_name=f"{out_dir}/{current_date}_01update",
+                    output_name=out_dir / f"{current_date}_01update",
                 )
                 configure(
                     work_dir,
                     configure_script,
                     runner=configure_runner,
-                    output_name=f"{out_dir}/{current_date}_02config",
+                    output_name=out_dir / f"{current_date}_02config",
                 )
                 build(
                     work_dir,
                     build_script,
                     runner=build_runner,
-                    output_name=f"{out_dir}/{current_date}_03build",
+                    output_name=out_dir / f"{current_date}_03build",
                 )
                 for ti in range(0, 5):
                     test(
                         work_dir,
                         test_script,
                         runner=test_runner,
-                        output_name=f"{out_dir}/{current_date}_04test{ti}",
+                        output_name=out_dir / f"{current_date}_04test{ti}",
                     )
                 set_progress(out_dir, commit_hash)
             else:
