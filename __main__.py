@@ -254,7 +254,7 @@ def main(spec: Path, work_dir: Path, out_dir: Path, start_date: str, end_date: s
         raise RuntimeError("no work dir")
 
     # replace {{work_dir}} in the configure script with work_dir
-    configure_script = configure_script.replace("{{work_dir}}", str(work_dir))
+    configure_script = configure_script.replace("{{work_dir}}", str(work_dir.resolve()))
 
     get(work_dir, remote)
 
