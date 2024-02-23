@@ -8,6 +8,7 @@ from tempfile import NamedTemporaryFile
 import os
 import stat
 import json
+import shlex
 
 import click
 
@@ -23,9 +24,13 @@ class RunException(Exception):
 
 def run(cmd, cwd=None, output_name: Path = None, output_append=False):
     """Run a shell command and return its output."""
+
+    env = dict(os.environ) # copy of calling environment
+
+
     print(f"run {cmd} in {cwd}")
     process = subprocess.Popen(
-        cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True
+        cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
     )
     stdout, stderr = process.communicate()
     stdout = stdout.decode("utf-8")
@@ -53,11 +58,11 @@ def run(cmd, cwd=None, output_name: Path = None, output_append=False):
 def last_commit_before_end_of(work_dir: Path, date: datetime.datetime):
     """Find the last commit of a given day."""
     date_str = date.strftime("%Y-%m-%d")
-    cmd = f"git checkout develop"
+    run(["git", "checkout", "develop"], cwd=work_dir)
+    run(["git", "reset", "--hard", "origin/develop"], cwd=work_dir)
+    cmd = ["git", "log", f"--before={date_str}T23:59:59", "--pretty=format:'%H'", "-1"]
     stdout, stderr, code = run(cmd, cwd=work_dir)
-    cmd = f"git log --before={date_str}T23:59:59 --pretty=format:'%H' -1"
-    stdout, stderr, code = run(cmd, cwd=work_dir)
-    return stdout.strip()
+    return stdout.strip().strip("'")
 
 
 class Job:
@@ -67,16 +72,16 @@ class Job:
 
 def get(work_dir: Path, remote: str):
     try:
-        run(f"git clone {remote} {work_dir}")
+        run(["git", "clone", f"{remote}", f"{work_dir}"])
     except RunException as e:
         if not "already exists" in e.stderr:
             raise e
-    run(f"git fetch -a", cwd=work_dir)
+    run(["git", "fetch", "origin"], cwd=work_dir)
 
 
 def update(work_dir: Path, sha: str, output_name: str = None):
     try:
-        run(f"git reset --hard {sha}", cwd=work_dir, output_name=output_name)
+        run(["git", "reset", "--hard", sha], cwd=work_dir, output_name=output_name)
     except RunException as e:
         print(e.stdout)
         print(e.stderr)
@@ -92,10 +97,11 @@ class RunnableScript:
         self.prefix = prefix
 
     def __enter__(self):
-        f = open(str(self.prefix) + ".sh", 'w')
+        sh_path = str(self.prefix) + ".sh"
+        print(f"write script to {sh_path}")
+        f = open(sh_path, 'w')
         self.name = f.name
-        f.write("#! /bin/bash\n")
-        f.write("set -eo pipefail\n")
+        f.write("#! /bin/bash -e\n")
         f.write(self.script)
         f.close()
         os.chmod(self.name, RunnableScript.RWX)
@@ -107,24 +113,24 @@ class RunnableScript:
         return True
 
 
-def configure(work_dir: Path, script: str, runner: str = None, output_name: str = None):
+def configure(work_dir: Path, script: str, runner: List[str] = None, output_name: str = None):
 
     if not runner:
-        runner = ""
-    else:
-        runner = runner + " "
+        runner = []
 
     build_dir = work_dir / "build"
     print(f"destroy cmake stuff in {build_dir} before configure...")
-    shutil.rmtree(work_dir / "CMakeFiles", ignore_errors=True)
-    cmakecache_path = work_dir / "CMakeCache.txt"
+    shutil.rmtree(work_dir / "build" / "CMakeFiles", ignore_errors=True)
+    cmakecache_path = work_dir / "build" / "CMakeCache.txt"
     if cmakecache_path.is_file():
         cmakecache_path.unlink()
 
+    shutil.rmtree(work_dir / "build", ignore_errors=True)
+
     with RunnableScript(script, prefix=output_name) as f:
         try:
             stdout, stderr, code = run(
-                runner + f.name, cwd=work_dir, output_name=output_name
+                runner + [f.name], cwd=work_dir, output_name=output_name
             )
         except RunException as e:
             print(e.stdout)
@@ -133,17 +139,15 @@ def configure(work_dir: Path, script: str, runner: str = None, output_name: str 
     return stdout, stderr
 
 
-def build(work_dir: Path, script: str, runner: str = None, output_name: str = None):
+def build(work_dir: Path, script: str, runner: List[str] = None, output_name: str = None):
 
     if not runner:
-        runner = ""
-    else:
-        runner = runner + " "
+        runner = []
 
     with RunnableScript(script, prefix=output_name) as f:
         try:
             stdout, stderr, code = run(
-                runner + f.name, cwd=work_dir / "build", output_name=output_name
+                runner + [f.name], cwd=work_dir / "build", output_name=output_name
             )
         except RunException as e:
             print(e.stdout)
@@ -152,17 +156,15 @@ def build(work_dir: Path, script: str, runner: str = None, output_name: str = No
     return stdout, stderr
 
 
-def test(work_dir: Path, script: str, runner: str = None, output_name: str = None):
-
+def test(work_dir: Path, script: str, runner: List[str] = None, output_name: str = None):
+    
     if not runner:
-        runner = ""
-    else:
-        runner = runner + " "
+        runner = []
 
     with RunnableScript(script, prefix=output_name) as f:
         try:
             stdout, stderr, code = run(
-                runner + f.name,
+                runner + [f.name],
                 cwd=str(work_dir / "build" / "packages" / "tpetra"),
                 output_name=output_name,
             )
@@ -239,6 +241,13 @@ def main(spec: Path, work_dir: Path, out_dir: Path, start_date: str, end_date: s
     test_script = test_spec.get("script", None)
     test_runner = test_spec.get("script_runner", None)
 
+    if isinstance(configure_runner, str):
+        configure_runner = shlex.split(configure_runner)
+    if isinstance(build_runner, str):
+        build_runner = shlex.split(build_runner)
+    if isinstance(test_runner, str):
+        test_runner = shlex.split(test_runner)
+
     if start_date is None:
         raise RuntimeError("No start_date provided")
     if not isinstance(start_date, datetime.date):
@@ -264,7 +273,10 @@ def main(spec: Path, work_dir: Path, out_dir: Path, start_date: str, end_date: s
     out_dir = out_dir.resolve()
 
     # replace {{work_dir}} in the configure script with work_dir
-    configure_script = configure_script.replace("{{work_dir}}", str(work_dir.resolve()))
+    quoted_work_dir = shlex.quote(str(work_dir.resolve()))
+    configure_script = configure_script.replace("{{work_dir}}", quoted_work_dir)
+    build_script = build_script.replace("{{work_dir}}", quoted_work_dir)
+    test_script = test_script.replace("{{work_dir}}", quoted_work_dir)
 
     get(work_dir, remote)
 
